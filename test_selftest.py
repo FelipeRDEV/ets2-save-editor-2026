@@ -111,13 +111,16 @@ def test_field_edit(tmpfile="_selftest_game.sii"):
     with open(tmpfile, "wb") as fh:
         fh.write(sample.encode("utf-8"))
     sf = SaveFile(tmpfile)
-    assert sf.get_field("money_account") == "1000"
-    sf.apply_quick_fields({"money_account": "9999999",
-                           "experience_points": "123456", "adr": "6"})
-    assert "money_account: 9999999" in sf.text
-    assert "experience_points: 123456" in sf.text
-    assert "adr: 6" in sf.text
-    print("[OK] regex field editing")
+    assert sf.get_field("money_account", "bank") == "1000"
+    applied, missing = sf.apply_quick_fields(
+        {"money_account": "9999999", "experience_points": "123456", "adr": "6"})
+    assert not missing, missing
+    text = sf.doc.render()
+    assert "money_account: 9999999" in text, text
+    assert "experience_points: 123456" in text
+    assert "adr: 6" in text
+    assert sf.is_game_save()
+    print("[OK] structured field editing (applied: %s)" % applied)
     import os
     os.remove(tmpfile)
 

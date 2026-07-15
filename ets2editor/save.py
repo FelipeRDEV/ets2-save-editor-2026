@@ -7,40 +7,132 @@ There is no need to re-encrypt or re-encode to BSII.
 
 import os
 import re
+import json
 import shutil
+import string
 import time
 
 from .formats import decode_to_text
+from . import siin
+
+GAMES = ("Euro Truck Simulator 2", "American Truck Simulator")
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".ets2_save_editor.json")
 
 
-# Quick-edit fields: (key, label, kind).
-# 'money_account' lives in the "bank" unit; the rest live in "economy".
+# Quick-edit fields: (key, label, unit_type).
+# money_account lives in the "bank" unit; the rest live in "economy".
 QUICK_FIELDS = [
-    ("money_account", "Money", "int"),
-    ("experience_points", "XP (experience)", "int"),
-    ("adr", "Skill: ADR", "int"),
-    ("long_dist", "Skill: Long distance", "int"),
-    ("heavy", "Skill: Heavy cargo", "int"),
-    ("fragile", "Skill: Fragile cargo", "int"),
-    ("urgent", "Skill: Urgent delivery", "int"),
-    ("mechanical", "Skill: High value", "int"),
+    ("money_account", "Money", "bank"),
+    ("experience_points", "XP (experience)", "economy"),
+    ("adr", "Skill: ADR", "economy"),
+    ("long_dist", "Skill: Long distance", "economy"),
+    ("heavy", "Skill: Heavy cargo", "economy"),
+    ("fragile", "Skill: Fragile cargo", "economy"),
+    ("urgent", "Skill: Urgent delivery", "economy"),
+    ("mechanical", "Skill: High value", "economy"),
 ]
+
+
+def _load_config():
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_config(cfg):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+    except OSError:
+        pass
+
+
+def get_custom_dirs():
+    return list(_load_config().get("custom_dirs", []))
+
+
+def add_custom_dir(path):
+    """Remember a user-picked folder (game folder or a 'profiles' folder)."""
+    cfg = _load_config()
+    dirs = cfg.setdefault("custom_dirs", [])
+    path = os.path.normpath(path)
+    if path not in dirs:
+        dirs.append(path)
+        _save_config(cfg)
+    return dirs
+
+
+def _windows_drives():
+    for letter in string.ascii_uppercase:
+        root = "%s:\\" % letter
+        if os.path.exists(root):
+            yield root
+
+
+def _candidate_base_dirs():
+    """All plausible '<...>/<Game>' folders across the system."""
+    home = os.path.expanduser("~")
+    docs_names = ["Documents", "Documentos"]
+    roots = [home, os.path.join(home, "OneDrive")]
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive:
+        roots.append(onedrive)
+    # Documents/Documentos at the root of every drive (e.g. E:\Documentos\...).
+    for drive in _windows_drives():
+        for docs in docs_names:
+            roots.append(os.path.join(drive, docs))
+        roots.append(drive)  # game folder directly at the drive root
+
+    bases = []
+    seen = set()
+    for root in roots:
+        for game in GAMES:
+            path = os.path.join(root, game)
+            if path not in seen:
+                seen.add(path)
+                bases.append(path)
+    # User-added custom folders are treated as bases too.
+    for custom in get_custom_dirs():
+        if custom not in seen:
+            seen.add(custom)
+            bases.append(custom)
+    return bases
+
+
+def _infer_game(path):
+    low = path.lower()
+    if "american" in low or "\\ats" in low or "/ats" in low:
+        return "American Truck Simulator"
+    return "Euro Truck Simulator 2"
+
+
+def _profiles_root(base):
+    """Return the 'profiles' dir for a base, or the base itself if it is one."""
+    direct = os.path.join(base, "profiles")
+    if os.path.isdir(direct):
+        return direct
+    if os.path.basename(os.path.normpath(base)).lower() == "profiles" \
+            and os.path.isdir(base):
+        return base
+    return None
 
 
 def find_profiles(base_dirs=None):
     """Locate ETS2/ATS profiles. Returns a list of dicts with their saves."""
     if base_dirs is None:
-        docs = os.path.join(os.path.expanduser("~"), "Documents")
-        base_dirs = [
-            os.path.join(docs, "Euro Truck Simulator 2"),
-            os.path.join(docs, "American Truck Simulator"),
-        ]
+        base_dirs = _candidate_base_dirs()
     profiles = []
+    seen_roots = set()
     for base in base_dirs:
-        prof_root = os.path.join(base, "profiles")
-        if not os.path.isdir(prof_root):
+        prof_root = _profiles_root(base)
+        if not prof_root or prof_root in seen_roots:
             continue
-        game = os.path.basename(base)
+        seen_roots.add(prof_root)
+        # game name from the folder above 'profiles' when possible
+        parent = os.path.basename(os.path.dirname(os.path.normpath(prof_root)))
+        game = parent if parent in GAMES else _infer_game(prof_root)
         for prof in sorted(os.listdir(prof_root)):
             save_dir = os.path.join(prof_root, prof, "save")
             if not os.path.isdir(save_dir):
@@ -49,7 +141,11 @@ def find_profiles(base_dirs=None):
             for slot in sorted(os.listdir(save_dir)):
                 game_sii = os.path.join(save_dir, slot, "game.sii")
                 if os.path.isfile(game_sii):
-                    saves.append({"slot": slot, "path": game_sii})
+                    saves.append({
+                        "slot": slot,
+                        "path": game_sii,
+                        "label": _save_label(os.path.join(save_dir, slot)),
+                    })
             if saves:
                 profiles.append({
                     "game": game,
@@ -58,6 +154,24 @@ def find_profiles(base_dirs=None):
                     "saves": saves,
                 })
     return profiles
+
+
+def _save_label(slot_dir):
+    """Read the human name of a save from its info.sii, if possible."""
+    info = os.path.join(slot_dir, "info.sii")
+    if not os.path.isfile(info):
+        return os.path.basename(slot_dir)
+    try:
+        with open(info, "rb") as fh:
+            text, _ = decode_to_text(fh.read())
+        m = re.search(r'^\s*name:\s*(.+?)\s*$', text, re.MULTILINE)
+        if m:
+            name = m.group(1).strip().strip('"').strip()
+            if name:
+                return "%s (%s)" % (name, os.path.basename(slot_dir))
+    except Exception:
+        pass
+    return os.path.basename(slot_dir)
 
 
 def _decode_profile_name(hex_name):
@@ -69,48 +183,79 @@ def _decode_profile_name(hex_name):
 
 
 class SaveFile:
-    """A game.sii loaded as SiiN text, with field editing."""
+    """A game.sii loaded as a structured SiiN document, with field editing."""
 
     def __init__(self, path):
         self.path = path
         with open(path, "rb") as fh:
             self.raw = fh.read()
         self.text, self.source_format = decode_to_text(self.raw)
+        self.doc = siin.parse(self.text)
+
+    @property
+    def filename(self):
+        return os.path.basename(self.path)
+
+    def is_game_save(self):
+        """True if this file looks like a game.sii (has an economy/bank unit)."""
+        return bool(self.doc.first("economy") or self.doc.first("bank"))
 
     # -- reading fields ---------------------------------------------------
-    def get_field(self, key):
-        """Return the value (str) of the first 'key: value' occurrence."""
-        m = re.search(r"^\s*%s:\s*(.+?)\s*$" % re.escape(key),
-                      self.text, re.MULTILINE)
-        return m.group(1) if m else None
+    def get_field(self, key, unit_type=None):
+        """Return the value of the first 'key' in the given unit type."""
+        if unit_type:
+            unit = self.doc.first(unit_type)
+            if unit is not None:
+                v = unit.get(key)
+                if v is not None:
+                    return v
+        # fallback: search all units
+        for u in self.doc.units:
+            v = u.get(key)
+            if v is not None:
+                return v
+        return None
 
     def read_quick_fields(self):
+        """Return {key: value_or_None} for every quick field."""
         out = {}
-        for key, _label, _kind in QUICK_FIELDS:
-            out[key] = self.get_field(key)
+        for key, _label, unit_type in QUICK_FIELDS:
+            out[key] = self.get_field(key, unit_type)
         return out
 
     # -- writing fields ---------------------------------------------------
-    def set_field(self, key, value):
-        """Replace the value of the first 'key:' occurrence. True if found."""
-        pattern = re.compile(r"^(\s*%s:\s*).+?(\s*)$" % re.escape(key),
-                             re.MULTILINE)
-        new_text, n = pattern.subn(
-            lambda m: "%s%s%s" % (m.group(1), value, m.group(2)),
-            self.text, count=1)
-        if n:
-            self.text = new_text
-        return bool(n)
+    def set_field(self, key, value, unit_type=None):
+        """Set the value of 'key' in unit_type. Returns True if it existed."""
+        if unit_type:
+            unit = self.doc.first(unit_type)
+            if unit is not None and unit.set(key, value):
+                return True
+        for u in self.doc.units:
+            if u.set(key, value):
+                return True
+        return False
 
     def apply_quick_fields(self, values):
-        """values: dict key->new_value (str). Returns list of applied keys."""
-        applied = []
+        """values: dict key->new_value. Returns (applied, missing) key lists."""
+        unit_map = {k: ut for k, _l, ut in QUICK_FIELDS}
+        applied, missing = [], []
         for key, val in values.items():
-            if val is None or val == "":
+            if val is None or str(val).strip() == "":
                 continue
-            if self.set_field(key, str(val)):
+            if self.set_field(key, str(val).strip(), unit_map.get(key)):
                 applied.append(key)
-        return applied
+            else:
+                missing.append(key)
+        return applied, missing
+
+    def sync_text_from_doc(self):
+        self.text = self.doc.render()
+        return self.text
+
+    def reparse_text(self, text):
+        """Replace the document by re-parsing edited text (raw tab)."""
+        self.text = text
+        self.doc = siin.parse(text)
 
     # -- saving -----------------------------------------------------------
     def backup(self):
@@ -121,12 +266,14 @@ class SaveFile:
         return bak
 
     def save(self, make_backup=True):
-        """Write the current text as SiiN. Backs up the original by default."""
+        """Serialize the document and write it as SiiN. Backs up by default."""
         bak = self.backup() if make_backup else None
+        text = self.doc.render()
         with open(self.path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(self.text)
+            fh.write(text)
+        self.text = text
         return bak
 
     def save_as(self, out_path):
         with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(self.text)
+            fh.write(self.doc.render())
