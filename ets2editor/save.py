@@ -32,6 +32,15 @@ QUICK_FIELDS = [
     ("mechanical", "Skill: High value", "economy"),
 ]
 
+# Maximum point per skill (economy field -> max).
+SKILL_MAX = {
+    "adr": 6, "long_dist": 6, "heavy": 6,
+    "fragile": 6, "urgent": 6, "mechanical": 6,
+}
+
+XP_MAX = 999_999_999
+MONEY_MAX = 1_000_000_000
+
 
 def _load_config():
     try:
@@ -147,10 +156,14 @@ def find_profiles(base_dirs=None):
                         "label": _save_label(os.path.join(save_dir, slot)),
                     })
             if saves:
+                prof_dir = os.path.join(prof_root, prof)
+                avatar = os.path.join(prof_dir, "avatar.png")
                 profiles.append({
                     "game": game,
                     "profile": prof,
                     "name": _decode_profile_name(prof),
+                    "dir": prof_dir,
+                    "avatar": avatar if os.path.isfile(avatar) else None,
                     "saves": saves,
                 })
     return profiles
@@ -247,6 +260,71 @@ class SaveFile:
             else:
                 missing.append(key)
         return applied, missing
+
+    # -- bulk / "max" operations -----------------------------------------
+    def vehicles(self):
+        return self.doc.units_of("vehicle")
+
+    def repair_all(self, include_unfixable=True):
+        """Set every wear field on player vehicles to 0. Returns count."""
+        n = 0
+        for u in self.vehicles():
+            for f in u.fields:
+                if f.key and "wear" in f.key:
+                    if not include_unfixable and "unfixable" in f.key:
+                        continue
+                    if f.value != "0":
+                        f.value = "0"
+                        n += 1
+        return n
+
+    def refuel_all(self):
+        """Fill fuel on all player vehicles. Returns count."""
+        n = 0
+        for u in self.vehicles():
+            if u.set("fuel_relative", "1"):
+                n += 1
+        return n
+
+    def max_skills(self):
+        econ = self.doc.first("economy")
+        n = 0
+        if econ:
+            for key, mx in SKILL_MAX.items():
+                if econ.set(key, str(mx)):
+                    n += 1
+        return n
+
+    def own_all_garages(self):
+        """Set all garages to an 'owned' status. Returns (count, status)."""
+        garages = self.doc.units_of("garage")
+        vals = sorted({int(u.get("status"))
+                       for u in garages
+                       if (u.get("status") or "").isdigit()
+                       and int(u.get("status")) != 0})
+        target = str(vals[-1]) if vals else "6"
+        n = 0
+        for u in garages:
+            if u.set("status", target):
+                n += 1
+        return n, target
+
+    def set_money(self, value):
+        return self.set_field("money_account", str(value), "bank")
+
+    def set_xp(self, value):
+        return self.set_field("experience_points", str(value), "economy")
+
+    def god_mode(self):
+        """Money+XP+skills to max, repair & refuel all, own all garages."""
+        report = {}
+        report["money"] = self.set_money(MONEY_MAX)
+        report["xp"] = self.set_xp(XP_MAX)
+        report["skills"] = self.max_skills()
+        report["repaired_fields"] = self.repair_all()
+        report["refueled"] = self.refuel_all()
+        report["garages"], report["garage_status"] = self.own_all_garages()
+        return report
 
     def sync_text_from_doc(self):
         self.text = self.doc.render()

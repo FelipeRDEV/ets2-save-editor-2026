@@ -1,1 +1,2 @@
 pycryptodome>=3.20
+sv-ttk>=2.6
