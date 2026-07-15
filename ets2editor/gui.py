@@ -262,6 +262,17 @@ class EditorApp(tk.Tk):
         self.lbl_company_note = ttk.Label(f, foreground="#999", text="")
         self.lbl_company_note.grid(row=3, column=0, columnspan=5, sticky="w")
 
+        world = ttk.LabelFrame(tab, text="World / Map", padding=12)
+        world.pack(fill="x", pady=12)
+        ttk.Button(world, text="🗺  Unlock full map (cities + dealers + agencies)",
+                   command=self._unlock_map).pack(anchor="w")
+        self.lbl_map = ttk.Label(world, foreground="#999", text="")
+        self.lbl_map.pack(anchor="w", pady=(6, 0))
+        ttk.Label(world, foreground="#999",
+                  text=("Visits every city in your save and unlocks all truck "
+                        "dealers & recruitment agencies — so you have somewhere "
+                        "to buy your first truck.")).pack(anchor="w")
+
     def _build_garages_tab(self):
         tab = ttk.Frame(self.nb, padding=10)
         self.nb.add(tab, text="\U0001F3E0  Garages")
@@ -523,6 +534,19 @@ class EditorApp(tk.Tk):
                                  values=(u.name, u.get("status")))
         self.lbl_gar.configure(text="%d garages" % len(self._gar_units))
 
+    def _unlock_map(self):
+        if not self.save:
+            messagebox.showwarning("Nothing open", "Load a save first.")
+            return
+        r = self.save.unlock_map()
+        self._refresh_summary()
+        self._text_from_doc()
+        txt = ("Unlocked: %d cities, %d truck dealers, %d recruitment agencies. "
+               "Remember to SAVE." % (r["cities"], r["dealers"],
+                                      r["recruitments"]))
+        self.lbl_map.configure(text=txt)
+        self.status.set(txt)
+
     def _own_all_garages(self):
         if not self.save:
             return
@@ -578,10 +602,11 @@ class EditorApp(tk.Tk):
             return
         r = self.save.god_mode()
         self._refresh_all_tabs()
-        self.status.set("God Mode applied: money/xp/skills maxed, %d wear "
-                        "fields fixed, %d trucks refueled, %d garages owned. "
-                        "Click SAVE." % (r["repaired_fields"], r["refueled"],
-                                         r["garages"]))
+        self.status.set("God Mode: money/xp/skills maxed, %d wear fields fixed, "
+                        "%d trucks refueled, %d garages owned, %d cities + "
+                        "%d dealers unlocked. Click SAVE."
+                        % (r["repaired_fields"], r["refueled"], r["garages"],
+                           r["map"]["cities"], r["map"]["dealers"]))
 
     # ================================================================
     # Explorer

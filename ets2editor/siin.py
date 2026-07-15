@@ -57,6 +57,29 @@ class Unit:
                 return True
         return False
 
+    def set_array(self, key, values, quote=False):
+        """Replace an array field (count line + key[i] lines) with new values.
+
+        Keeps the array at its original position; appends if it did not exist.
+        """
+        pos = None
+        kept = []
+        for f in self.fields:
+            if f.key == key:
+                if pos is None:
+                    pos = len(kept)
+                continue  # drop old count + indexed lines
+            kept.append(f)
+        block = [Field(key, "", str(len(values)))]
+        for i, v in enumerate(values):
+            val = '"%s"' % v if quote else str(v)
+            block.append(Field(key, "[%d]" % i, val))
+        if pos is None:
+            pos = len(kept)
+        kept[pos:pos] = block
+        self.fields = kept
+        return len(values)
+
     def render(self):
         out = ["%s : %s {" % (self.type, self.name)]
         out.extend(f.render() for f in self.fields)

@@ -14,6 +14,7 @@ import time
 
 from .formats import decode_to_text
 from . import siin
+from .gamedata import DEALER_CITIES, RECRUITMENT_CITIES
 
 GAMES = ("Euro Truck Simulator 2", "American Truck Simulator")
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".ets2_save_editor.json")
@@ -309,6 +310,36 @@ class SaveFile:
                 n += 1
         return n, target
 
+    def harvest_cities(self):
+        """City tokens present in this save (from company unit names)."""
+        cities = set()
+        for u in self.doc.units_of("company"):
+            if "." in u.name:
+                cities.add(u.name.rsplit(".", 1)[-1])
+        return cities
+
+    def unlock_map(self):
+        """Visit all cities and unlock every dealer/agency this install has.
+
+        City list comes from the save itself; dealer/agency cities are the
+        intersection with the known dealer/agency lists, so only valid tokens
+        for the player's DLCs are written. Returns a summary dict.
+        """
+        econ = self.doc.first("economy")
+        if econ is None:
+            return {"cities": 0, "dealers": 0, "recruitments": 0}
+        cities = sorted(self.harvest_cities())
+        dealers = [c for c in cities if c in DEALER_CITIES]
+        recruits = [c for c in cities if c in RECRUITMENT_CITIES]
+        econ.set_array("visited_cities", cities)
+        econ.set_array("visited_cities_count", [1] * len(cities))
+        econ.set_array("unlocked_dealers", dealers)
+        econ.set_array("unlocked_recruitments", recruits)
+        if cities:
+            econ.set("last_visited_city", cities[0])
+        return {"cities": len(cities), "dealers": len(dealers),
+                "recruitments": len(recruits)}
+
     def set_money(self, value):
         return self.set_field("money_account", str(value), "bank")
 
@@ -324,6 +355,7 @@ class SaveFile:
         report["repaired_fields"] = self.repair_all()
         report["refueled"] = self.refuel_all()
         report["garages"], report["garage_status"] = self.own_all_garages()
+        report["map"] = self.unlock_map()
         return report
 
     def sync_text_from_doc(self):
